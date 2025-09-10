@@ -1,4 +1,3 @@
-
 import os
 import time
 import re
@@ -8,98 +7,101 @@ from deepface import DeepFace
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
-# ---------- User configuration ----------
-# Option A: set these as environment variables before running:
-#   export SPOTIPY_CLIENT_ID=your_id
-#   export SPOTIPY_CLIENT_SECRET=your_secret
-#
-# Option B: fill them here (not recommended for shared machines)
-'''SPOTIPY_CLIENT_ID = os.environ.get("SPOTIPY_CLIENT_ID", "")
-SPOTIPY_CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET", "")'''
-
-SPOTIPY_CLIENT_ID ="b33deea26b8c4379939ba0b151612275"
-
-SPOTIPY_CLIENT_SECRET ="8bc4d86a60334345b880984d457af28c" 
-
-# If you left the env vars blank, put your credentials here:
-# SPOTIPY_CLIENT_ID = "your_id_here"
-# SPOTIPY_CLIENT_SECRET = "your_secret_here"
-
-# ----------------------------------------
+# ---------- Spotify credentials ----------
+SPOTIPY_CLIENT_ID = "b33deea26b8c4379939ba0b151612275"
+SPOTIPY_CLIENT_SECRET = "8bc4d86a60334345b880984d457af28c"
 
 if not SPOTIPY_CLIENT_ID or not SPOTIPY_CLIENT_SECRET:
-    raise RuntimeError("Spotify credentials missing. Set SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET environment variables.")
+    raise RuntimeError("Spotify credentials missing.")
 
-# Spotify client
 spotify = spotipy.Spotify(client_credentials_manager=SpotifyClientCredentials(
     client_id=SPOTIPY_CLIENT_ID,
     client_secret=SPOTIPY_CLIENT_SECRET
 ))
 
-def capture_face_frame(timeout=10):
-    """
-    Open webcam, detect a face area and return a cropped face image (BGR)
-    If face detection fails, returns a recent frame (still OK for DeepFace)
-    """
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        raise RuntimeError("Could not open webcam (index 0).")
+# ---------- User quiz ----------
+def ask_user_genre_and_language():
+    genres = ['pop', 'rock', 'hip-hop', 'indie', 'classical', 'jazz', 'electronic', 'blues']
+    languages = ['english', 'hindi', 'spanish', 'korean', 'french', 'japanese', 'german', 'telugu']
+
+    print("=== Music Preference Quiz ===")
+    print("Choose your favorite genre from the list below:")
+    print(", ".join(genres))
+    while True:
+        genre = input("Genre: ").strip().lower()
+        if genre in genres:
+            break
+        print("Invalid choice, pick one from the list.")
+
+    print("\nChoose your preferred language from the list below:")
+    print(", ".join(languages))
+    while True:
+        language = input("Language: ").strip().lower()
+        if language in languages:
+            break
+        print("Invalid choice, pick one from the list.")
+
+    return genre, language
+
+# ---------- Webcam capture ----------
+def capture_face_frame(min_open_time=30):
+    input(f"Press Enter to open the webcam. Keeping feed open for at least {min_open_time} seconds...")
+    cap = None
+    for idx in range(3):
+        cap = cv2.VideoCapture(idx)
+        if cap.isOpened():
+            print(f"Using webcam at index {idx}")
+            break
+        cap.release()
+        cap = None
+    if cap is None:
+        raise RuntimeError("Could not open any webcam (tried indices 0-2).")
 
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    start = time.time()
+    start_time = time.time()
     frame = None
-    print("Looking for a face... Please position your face in front of the webcam.")
+    print("Camera opened. Position your face in front of the webcam.")
+
     while True:
         ret, img = cap.read()
         if not ret:
-            break
+            continue
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80,80))
-        # Draw rectangles for feedback
-        for (x,y,w,h) in faces:
-            cv2.rectangle(img,(x,y),(x+w,y+h),(0,255,0),2)
-        cv2.imshow('Press q to capture early. Waiting for face detection...', img)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
+        for (x, y, w, h) in faces:
+            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-        # If face detected, crop and return
-        if len(faces) > 0:
-            x,y,w,h = faces[0]
+        cv2.imshow(f"Press 'q' to capture after {min_open_time} secs", img)
+
+        if cv2.waitKey(1) & 0xFF == ord('q') and (time.time() - start_time) >= min_open_time:
+            ret, frame_full = cap.read()
+            if ret:
+                frame = frame_full.copy()
+            print("Manual capture triggered.")
+            break
+
+        if len(faces) > 0 and (time.time() - start_time) >= min_open_time:
+            x, y, w, h = faces[0]
             frame = img[y:y+h, x:x+w].copy()
             print("Face detected and captured.")
             break
 
-        # Allow manual capture (press q)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            ret, frame_full = cap.read()
-            if ret:
-                frame = frame_full.copy()
-            break
-
-        # timeout fallback
-        if time.time() - start > timeout:
-            print("Timeout reached - capturing last frame.")
-            ret, frame_full = cap.read()
-            if ret:
-                frame = frame_full.copy()
-            break
+    if frame is None:
+        ret, frame_full = cap.read()
+        if ret:
+            frame = frame_full.copy()
+        print("Captured last available frame.")
 
     cap.release()
     cv2.destroyAllWindows()
-    if frame is None:
-        raise RuntimeError("Failed to capture frame from webcam.")
     return frame
 
+# ---------- Emotion detection ----------
 def predict_emotion(face_img_bgr):
-    """
-    Use DeepFace to predict emotion from a BGR image (OpenCV format).
-    Returns dominant emotion and the full emotion dict.
-    """
-    # DeepFace expects either RGB image or path. Convert BGR -> RGB
     import numpy as np
     face_rgb = cv2.cvtColor(face_img_bgr, cv2.COLOR_BGR2RGB)
-    # run analysis - set enforce_detection False to allow analysis even if detection fails
     result = DeepFace.analyze(face_rgb, actions=['emotion'], enforce_detection=False)
-    # result is dict or list depending on version; normalize
     if isinstance(result, list):
         result = result[0]
     dominant = result.get('dominant_emotion', None)
@@ -107,16 +109,10 @@ def predict_emotion(face_img_bgr):
     return dominant, emotions
 
 def emotion_to_mood_query(emotion):
-    """
-    Map DeepFace emotion labels to a Spotify search query / mood keyword.
-    emotion: string like 'happy','sad','angry','surprise','neutral','fear','disgust'
-    """
-    e = emotion.lower() if emotion else 'neutral'
     mapping = {
         'happy': 'happy',
         'sad': 'sad',
         'angry': 'intense',
-        'angry': 'angry',
         'neutral': 'chill',
         'surprise': 'energetic',
         'fear': 'melancholy',
@@ -124,31 +120,39 @@ def emotion_to_mood_query(emotion):
         'sadness': 'sad',
         'joy': 'happy'
     }
-    # fallback
-    return mapping.get(e, e)
+    return mapping.get((emotion or 'neutral').lower(), 'chill')
 
-def get_top_5_tracks_for_mood(mood_query):
-    """
-    Use Spotify search to find a public playlist matching the mood_query,
-    then return the first 5 tracks (title, artists, spotify_url, preview_url)
-    """
-    # Search for playlist
-    q = f"{mood_query} playlist"
-    print(f"Searching Spotify for playlists with query: '{q}' ...")
-    res = spotify.search(q=q, type='playlist', limit=5)
-    playlists = res.get('playlists', {}).get('items', [])
+# ---------- Spotify tracks ----------
+def get_top_5_tracks_for_mood_genre_language(mood, genre, language):
+    queries = [
+        f"{mood} {genre} {language} playlist",
+        f"{mood} {genre} playlist",
+        f"{mood} playlist"
+    ]
+    playlists = []
+    for q in queries:
+        res = spotify.search(q=q, type='playlist', limit=5)
+        playlists = res.get('playlists', {}).get('items', [])
+        if playlists:
+            break
+
     if not playlists:
-        raise RuntimeError("No playlists found for mood.")
-    # choose the first playlist with tracks
+        print("No playlists found for mood/genre/language.")
+        return []
+
     playlist = playlists[0]
     playlist_id = playlist['id']
-    playlist_name = playlist['name']
+    playlist_name = playlist.get('name', 'Unknown')
     print(f"Using playlist: {playlist_name} ({playlist_id})")
 
-    # fetch playlist items
-    items = spotify.playlist_items(playlist_id, fields="items(track(name,artists(name),external_urls,preview_url,uri)),total", additional_types=['track'])
+    items = spotify.playlist_items(
+        playlist_id,
+        fields="items(track(name,artists(name),external_urls,preview_url,uri)),total",
+        additional_types=['track']
+    )
+
     tracks = []
-    for item in items.get('items', [])[:10]:  # get up to 10 candidates then trim to 5
+    for item in items.get('items', [])[:10]:
         t = item.get('track')
         if not t or t.get('name') is None:
             continue
@@ -163,11 +167,8 @@ def get_top_5_tracks_for_mood(mood_query):
             break
     return tracks
 
+# ---------- Lyrics fetch ----------
 def fetch_lyrics_snippet(artist, title, max_chars=300):
-    """
-    Try lyrics.ovh API: GET https://api.lyrics.ovh/v1/{artist}/{title}
-    Return small snippet or None.
-    """
     try:
         artist_clean = re.sub(r'[^\w\s\-]', '', artist).strip()
         title_clean = re.sub(r'[^\w\s\-]', '', title).strip()
@@ -183,20 +184,22 @@ def fetch_lyrics_snippet(artist, title, max_chars=300):
         pass
     return None
 
+# ---------- Main ----------
 def main():
     print("=== Emotion-to-Song Recommender ===")
-    frame = capture_face_frame(timeout=12)
-    print("Analyzing emotion... (this may take a few seconds the first time)")
+    user_genre, user_language = ask_user_genre_and_language()
+    frame = capture_face_frame(min_open_time=30)
+    print("Analyzing emotion...")
     dominant, emotions = predict_emotion(frame)
-    print("Detected emotion:", dominant)
-    print("All emotion scores:", emotions)
+    print(f"Detected emotion: {dominant}")
+    print("Emotion scores:", emotions)
 
     mood_query = emotion_to_mood_query(dominant)
     print(f"Mapped emotion '{dominant}' -> mood query '{mood_query}'")
 
-    tracks = get_top_5_tracks_for_mood(mood_query)
+    tracks = get_top_5_tracks_for_mood_genre_language(mood_query, user_genre, user_language)
     if not tracks:
-        print("No tracks found for this mood.")
+        print("No tracks found for this mood/genre/language.")
         return
 
     print("\nTop 5 recommended tracks:")
@@ -205,12 +208,8 @@ def main():
         print(f"   Spotify: {t['spotify_url']}")
         if t['preview_url']:
             print(f"   Preview: {t['preview_url']}")
-        # try lyrics
         lyrics_snip = fetch_lyrics_snippet(t['artists'].split(",")[0], t['title'])
-        if lyrics_snip:
-            print(f"   Lyrics snippet: {lyrics_snip}")
-        else:
-            print("   Lyrics snippet: [not found]")
+        print(f"   Lyrics snippet: {lyrics_snip or '[not found]'}")
 
 if __name__ == "__main__":
     main()
