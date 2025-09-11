@@ -1,215 +1,270 @@
-import os
-import time
-import re
-import requests
+import sys
 import cv2
-from deepface import DeepFace
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+from deepface import DeepFace
+import requests
+import re
+import tkinter as tk
+from tkinter import ttk, messagebox
+from PIL import Image, ImageTk
+import pygame
+import tempfile
+import os
+import io
+import webbrowser
 
-# ---------- Spotify credentials ----------
+# Spotify credentials
 SPOTIPY_CLIENT_ID = "b33deea26b8c4379939ba0b151612275"
 SPOTIPY_CLIENT_SECRET = "8bc4d86a60334345b880984d457af28c"
-
-if not SPOTIPY_CLIENT_ID or not SPOTIPY_CLIENT_SECRET:
-    raise RuntimeError("Spotify credentials missing.")
-
-spotify = spotipy.Spotify(client_credentials_manager=SpotifyClientCredentials(
-    client_id=SPOTIPY_CLIENT_ID,
-    client_secret=SPOTIPY_CLIENT_SECRET
-))
-
-# ---------- User quiz ----------
-def ask_user_genre_and_language():
-    genres = ['pop', 'rock', 'hip-hop', 'indie', 'classical', 'jazz', 'electronic', 'blues']
-    languages = ['english', 'hindi', 'spanish', 'korean', 'french', 'japanese', 'german', 'telugu']
-
-    print("=== Music Preference Quiz ===")
-    print("Choose your favorite genre from the list below:")
-    print(", ".join(genres))
-    while True:
-        genre = input("Genre: ").strip().lower()
-        if genre in genres:
-            break
-        print("Invalid choice, pick one from the list.")
-
-    print("\nChoose your preferred language from the list below:")
-    print(", ".join(languages))
-    while True:
-        language = input("Language: ").strip().lower()
-        if language in languages:
-            break
-        print("Invalid choice, pick one from the list.")
-
-    return genre, language
-
-# ---------- Webcam capture ----------
-def capture_face_frame(min_open_time=30):
-    input(f"Press Enter to open the webcam. Keeping feed open for at least {min_open_time} seconds...")
-    cap = None
-    for idx in range(3):
-        cap = cv2.VideoCapture(idx)
-        if cap.isOpened():
-            print(f"Using webcam at index {idx}")
-            break
-        cap.release()
-        cap = None
-    if cap is None:
-        raise RuntimeError("Could not open any webcam (tried indices 0-2).")
-
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    start_time = time.time()
-    frame = None
-    print("Camera opened. Position your face in front of the webcam.")
-
-    while True:
-        ret, img = cap.read()
-        if not ret:
-            continue
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
-        for (x, y, w, h) in faces:
-            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-
-        cv2.imshow(f"Press 'q' to capture after {min_open_time} secs", img)
-
-        if cv2.waitKey(1) & 0xFF == ord('q') and (time.time() - start_time) >= min_open_time:
-            ret, frame_full = cap.read()
-            if ret:
-                frame = frame_full.copy()
-            print("Manual capture triggered.")
-            break
-
-        if len(faces) > 0 and (time.time() - start_time) >= min_open_time:
-            x, y, w, h = faces[0]
-            frame = img[y:y+h, x:x+w].copy()
-            print("Face detected and captured.")
-            break
-
-    if frame is None:
-        ret, frame_full = cap.read()
-        if ret:
-            frame = frame_full.copy()
-        print("Captured last available frame.")
-
-    cap.release()
-    cv2.destroyAllWindows()
-    return frame
-
-# ---------- Emotion detection ----------
-def predict_emotion(face_img_bgr):
-    import numpy as np
-    face_rgb = cv2.cvtColor(face_img_bgr, cv2.COLOR_BGR2RGB)
-    result = DeepFace.analyze(face_rgb, actions=['emotion'], enforce_detection=False)
-    if isinstance(result, list):
-        result = result[0]
-    dominant = result.get('dominant_emotion', None)
-    emotions = result.get('emotion', {})
-    return dominant, emotions
-
-def emotion_to_mood_query(emotion):
-    mapping = {
-        'happy': 'happy',
-        'sad': 'sad',
-        'angry': 'intense',
-        'neutral': 'chill',
-        'surprise': 'energetic',
-        'fear': 'melancholy',
-        'disgust': 'angry',
-        'sadness': 'sad',
-        'joy': 'happy'
-    }
-    return mapping.get((emotion or 'neutral').lower(), 'chill')
-
-# ---------- Spotify tracks ----------
-def get_top_5_tracks_for_mood_genre_language(mood, genre, language):
-    queries = [
-        f"{mood} {genre} {language} playlist",
-        f"{mood} {genre} playlist",
-        f"{mood} playlist"
-    ]
-    playlists = []
-    for q in queries:
-        res = spotify.search(q=q, type='playlist', limit=5)
-        playlists = res.get('playlists', {}).get('items', [])
-        if playlists:
-            break
-
-    if not playlists:
-        print("No playlists found for mood/genre/language.")
-        return []
-
-    playlist = playlists[0]
-    playlist_id = playlist['id']
-    playlist_name = playlist.get('name', 'Unknown')
-    print(f"Using playlist: {playlist_name} ({playlist_id})")
-
-    items = spotify.playlist_items(
-        playlist_id,
-        fields="items(track(name,artists(name),external_urls,preview_url,uri)),total",
-        additional_types=['track']
+spotify = spotipy.Spotify(
+    client_credentials_manager=SpotifyClientCredentials(
+        client_id=SPOTIPY_CLIENT_ID, client_secret=SPOTIPY_CLIENT_SECRET
     )
+)
 
-    tracks = []
-    for item in items.get('items', [])[:10]:
-        t = item.get('track')
-        if not t or t.get('name') is None:
-            continue
-        artists = ", ".join([a['name'] for a in t.get('artists', [])])
-        tracks.append({
-            'title': t['name'],
-            'artists': artists,
-            'spotify_url': t.get('external_urls', {}).get('spotify'),
-            'preview_url': t.get('preview_url'),
-        })
-        if len(tracks) >= 5:
-            break
-    return tracks
+pygame.mixer.init()
 
-# ---------- Lyrics fetch ----------
-def fetch_lyrics_snippet(artist, title, max_chars=300):
-    try:
-        artist_clean = re.sub(r'[^\w\s\-]', '', artist).strip()
-        title_clean = re.sub(r'[^\w\s\-]', '', title).strip()
-        url = f"https://api.lyrics.ovh/v1/{requests.utils.quote(artist_clean)}/{requests.utils.quote(title_clean)}"
-        r = requests.get(url, timeout=6)
-        if r.status_code == 200:
-            data = r.json()
-            lyrics = data.get('lyrics', '')
-            if lyrics:
-                snippet = lyrics.strip().replace('\r', '').replace('\n\n', '\n')
-                return snippet[:max_chars] + ("..." if len(snippet) > max_chars else "")
-    except Exception:
-        pass
-    return None
 
-# ---------- Main ----------
-def main():
-    print("=== Emotion-to-Song Recommender ===")
-    user_genre, user_language = ask_user_genre_and_language()
-    frame = capture_face_frame(min_open_time=30)
-    print("Analyzing emotion...")
-    dominant, emotions = predict_emotion(frame)
-    print(f"Detected emotion: {dominant}")
-    print("Emotion scores:", emotions)
+class MusicRecommenderApp:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("🎵 Music Recommender")
+        self.master.geometry("1000x800")
+        self.master.configure(bg='#0a0a0a')
 
-    mood_query = emotion_to_mood_query(dominant)
-    print(f"Mapped emotion '{dominant}' -> mood query '{mood_query}'")
+        self.genres = ['pop', 'rock', 'hip-hop', 'indie', 'classical', 'jazz', 'electronic', 'blues']
+        self.languages = ['english', 'hindi', 'spanish', 'korean', 'french', 'japanese', 'german', 'telugu']
 
-    tracks = get_top_5_tracks_for_mood_genre_language(mood_query, user_genre, user_language)
-    if not tracks:
-        print("No tracks found for this mood/genre/language.")
-        return
+        self.cap = None
+        self.webcam_running = False
+        self.face_frame = None
+        self.dominant_emotion = None
+        self.tracks_data = []
+        self.preview_file = None
+        self.album_art_labels = []
 
-    print("\nTop 5 recommended tracks:")
-    for i, t in enumerate(tracks, start=1):
-        print(f"\n{i}. {t['title']} — {t['artists']}")
-        print(f"   Spotify: {t['spotify_url']}")
-        if t['preview_url']:
-            print(f"   Preview: {t['preview_url']}")
-        lyrics_snip = fetch_lyrics_snippet(t['artists'].split(",")[0], t['title'])
-        print(f"   Lyrics snippet: {lyrics_snip or '[not found]'}")
+        self.create_header()
+        self.show_quiz_step()
+
+    # Blue gradient header
+    def create_header(self):
+        header = tk.Canvas(self.master, height=80, width=1000, bd=0, highlightthickness=0)
+        header.pack(fill='x')
+        for i in range(1000):
+            r = 0
+            g = 100 + int((i/1000)*155)
+            b = 255
+            color = f'#{r:02x}{g:02x}{b:02x}'
+            header.create_line(i, 0, i, 80, fill=color)
+        header.create_text(500, 40, text="🎵 Music Recommender", fill='white', font=("Arial", 24, "bold"))
+
+    def clear_window(self):
+        for widget in self.master.winfo_children():
+            if not isinstance(widget, tk.Canvas):
+                widget.destroy()
+        self.album_art_labels = []
+
+    # Step 1: Quiz
+    def show_quiz_step(self):
+        self.clear_window()
+        main_frame = tk.Frame(self.master, bg='#0a0a0a')
+        main_frame.pack(expand=True)
+
+        tk.Label(main_frame, text="Choose your favorite genre:", font=("Arial", 14), fg='#00ccff', bg='#0a0a0a').pack(pady=5)
+        self.genre_var = tk.StringVar(value=self.genres[0])
+        ttk.Combobox(main_frame, values=self.genres, textvariable=self.genre_var, width=20).pack(pady=5)
+
+        tk.Label(main_frame, text="Choose your preferred language:", font=("Arial", 14), fg='#00ccff', bg='#0a0a0a').pack(pady=5)
+        self.language_var = tk.StringVar(value=self.languages[0])
+        ttk.Combobox(main_frame, values=self.languages, textvariable=self.language_var, width=20).pack(pady=5)
+
+        tk.Button(main_frame, text="Start Recommendation", font=("Arial", 14, "bold"),
+                  bg='#0066ff', fg='white', activebackground='#3399ff', activeforeground='white',
+                  padx=20, pady=10, command=self.show_webcam_step).pack(pady=20)
+
+    # Step 2: Webcam
+    def show_webcam_step(self):
+        self.clear_window()
+        main_frame = tk.Frame(self.master, bg='#0a0a0a')
+        main_frame.pack(expand=True, fill='both')
+
+        self.video_label = tk.Label(main_frame, bg='#0a0a0a', width=900, height=500)
+        self.video_label.pack(pady=10, expand=True)
+
+        tk.Button(main_frame, text="Capture Emotion", font=("Arial", 14, "bold"),
+                  bg='#0066ff', fg='white', activebackground='#3399ff',
+                  activeforeground='white', command=self.capture_emotion).pack(pady=20)
+
+        self.webcam_running = True
+        self.cap = cv2.VideoCapture(0)
+        self.update_frame()
+
+    def update_frame(self):
+        if self.webcam_running and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret:
+                frame = cv2.flip(frame, 1)
+                self.face_frame = frame.copy()  # for DeepFace analysis
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+                faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+                for (x, y, w, h) in faces:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 102, 255), 2)
+
+                frame_height, frame_width = frame.shape[:2]
+                max_width, max_height = 900, 500
+                scale = min(max_width/frame_width, max_height/frame_height)
+                new_w, new_h = int(frame_width*scale), int(frame_height*scale)
+                frame_resized = cv2.resize(frame, (new_w, new_h))
+
+                img = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                img = ImageTk.PhotoImage(Image.fromarray(img))
+                self.video_label.configure(image=img)
+                self.video_label.image = img
+
+            self.master.after(30, self.update_frame)
+
+    def capture_emotion(self):
+        if self.face_frame is None:
+            messagebox.showwarning("Error", "No face detected! Please adjust your webcam.")
+            return
+        self.webcam_running = False
+        if self.cap:
+            self.cap.release()
+        self.show_result_step()
+
+    # Step 3: Emotion results
+    def show_result_step(self):
+        self.clear_window()
+        dominant, emotions = self.predict_emotion(self.face_frame)
+        self.dominant_emotion = dominant
+
+        main_frame = tk.Frame(self.master, bg='#0a0a0a')
+        main_frame.pack(expand=True)
+        tk.Label(main_frame, text=f"Detected emotion: {dominant}", font=("Arial", 16, "bold"), fg='#00ccff', bg='#0a0a0a').pack(pady=10)
+        #tk.Label(main_frame, text=f"Scores: {emotions}", fg='white', bg='#0a0a0a').pack(pady=10)
+
+        tk.Button(main_frame, text="Get Song Recommendations", font=("Arial", 14, "bold"),
+                  bg='#0066ff', fg='white', activebackground='#3399ff', activeforeground='white',
+                  command=self.show_tracks_step).pack(pady=20)
+
+    def predict_emotion(self, face_img_bgr):
+        face_rgb = cv2.cvtColor(face_img_bgr, cv2.COLOR_BGR2RGB)
+        result = DeepFace.analyze(face_rgb, actions=['emotion'], enforce_detection=False)
+        if isinstance(result, list):
+            result = result[0]
+        dominant = result.get('dominant_emotion', 'neutral')
+        emotions = result.get('emotion', {})
+        return dominant, emotions
+
+    # Step 4: Track recommendations
+    def show_tracks_step(self):
+        self.clear_window()
+        genre = self.genre_var.get()
+        language = self.language_var.get()
+        mood_query = self.emotion_to_mood(self.dominant_emotion)
+        tracks = self.get_top_5_tracks(mood_query, genre, language)
+        self.tracks_data = tracks
+
+        tracks_frame = tk.Frame(self.master, bg='#0a0a0a')
+        tracks_frame.pack(pady=10)
+
+        for i, t in enumerate(tracks):
+            frame = tk.Frame(tracks_frame, padx=10, pady=10, relief=tk.RIDGE, borderwidth=2, bg='#001a33')
+            frame.grid(row=i//2, column=i%2, sticky="nsew", padx=10, pady=10)
+
+            if t['album_art']:
+                try:
+                    r = requests.get(t['album_art'], timeout=6)
+                    if r.status_code == 200:
+                        img = Image.open(io.BytesIO(r.content))
+                        img = img.resize((100, 100))
+                        img_tk = ImageTk.PhotoImage(img)
+                        art_label = tk.Label(frame, image=img_tk, bg='#001a33')
+                        art_label.image = img_tk
+                        art_label.pack()
+                        self.album_art_labels.append(art_label)
+                except:
+                    tk.Label(frame, text="[No Image]", bg='#001a33', fg='white').pack()
+
+            tk.Label(frame, text=f"{t['title']}", font=("Arial", 12, "bold"), fg='white', bg='#001a33').pack()
+            tk.Label(frame, text=f"by {t['artists']}", font=("Arial", 10), fg='#00ccff', bg='#001a33').pack()
+
+            # Open directly in Spotify
+            tk.Button(frame, text="play the song", font=("Arial", 10, "bold"),
+                      bg='#0066ff', fg='white', activebackground='#3399ff', activeforeground='white',
+                      command=lambda url=t['spotify_url']: webbrowser.open(url)).pack(pady=5)
+
+        button_frame = tk.Frame(self.master, bg='#0a0a0a')
+        button_frame.pack(pady=5)
+        tk.Button(button_frame, text="Stop Preview", bg='#0066ff', fg='white', activebackground='#3399ff', command=self.stop_preview).pack(side=tk.LEFT, padx=5)
+
+    # Emotion to mood mapping
+    def emotion_to_mood(self, emotion):
+        mapping = {
+            'happy': 'happy', 'sad': 'sad', 'angry': 'intense',
+            'neutral': 'chill', 'surprise': 'energetic', 'fear': 'melancholy',
+            'disgust': 'angry', 'sadness': 'sad', 'joy': 'happy'
+        }
+        return mapping.get((emotion or 'neutral').lower(), 'chill')
+
+    # Spotify search
+    def get_top_5_tracks(self, mood, genre, language):
+        queries = [
+            f"{mood} {genre} {language} playlist",
+            f"{mood} {genre} playlist",
+            f"{mood} playlist"
+        ]
+        playlists = []
+        for q in queries:
+            res = spotify.search(q=q, type='playlist', limit=5)
+            playlists = res.get('playlists', {}).get('items', [])
+            if playlists:
+                break
+        if not playlists:
+            messagebox.showwarning("No Tracks", "No playlists found for this mood/genre/language.")
+            return []
+
+        playlist = playlists[0]
+        playlist_id = playlist['id']
+        items = spotify.playlist_items(
+            playlist_id,
+            fields="items(track(name,artists(name),album(images),external_urls,preview_url,uri)),total",
+            additional_types=['track']
+        )
+        tracks = []
+        for item in items.get('items', [])[:10]:
+            t = item.get('track')
+            if not t or t.get('name') is None:
+                continue
+            artists = ", ".join([a['name'] for a in t.get('artists', [])])
+            album_art = None
+            if t.get('album', {}).get('images'):
+                album_art = t['album']['images'][0]['url']
+            tracks.append({
+                'title': t['name'],
+                'artists': artists,
+                'spotify_url': t.get('external_urls', {}).get('spotify'),
+                'preview_url': t.get('preview_url'),
+                'album_art': album_art
+            })
+            if len(tracks) >= 5:
+                break
+        return tracks
+
+    def stop_preview(self):
+        pygame.mixer.music.stop()
+        if self.preview_file and os.path.exists(self.preview_file):
+            try:
+                os.remove(self.preview_file)
+            except:
+                pass
+        self.preview_file = None
+
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = MusicRecommenderApp(root)
+    root.mainloop()
