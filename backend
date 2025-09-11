@@ -8,11 +8,11 @@ import re
 import tkinter as tk
 from tkinter import ttk, messagebox
 from PIL import Image, ImageTk
+import threading
 import pygame
 import tempfile
 import os
 import io
-import webbrowser
 
 # Spotify credentials
 SPOTIPY_CLIENT_ID = "b33deea26b8c4379939ba0b151612275"
@@ -144,7 +144,7 @@ class MusicRecommenderApp:
         main_frame = tk.Frame(self.master, bg='#0a0a0a')
         main_frame.pack(expand=True)
         tk.Label(main_frame, text=f"Detected emotion: {dominant}", font=("Arial", 16, "bold"), fg='#00ccff', bg='#0a0a0a').pack(pady=10)
-        #tk.Label(main_frame, text=f"Scores: {emotions}", fg='white', bg='#0a0a0a').pack(pady=10)
+        tk.Label(main_frame, text=f"Scores: {emotions}", fg='white', bg='#0a0a0a').pack(pady=10)
 
         tk.Button(main_frame, text="Get Song Recommendations", font=("Arial", 14, "bold"),
                   bg='#0066ff', fg='white', activebackground='#3399ff', activeforeground='white',
@@ -191,15 +191,19 @@ class MusicRecommenderApp:
 
             tk.Label(frame, text=f"{t['title']}", font=("Arial", 12, "bold"), fg='white', bg='#001a33').pack()
             tk.Label(frame, text=f"by {t['artists']}", font=("Arial", 10), fg='#00ccff', bg='#001a33').pack()
-
-            # Open directly in Spotify
-            tk.Button(frame, text="play the song", font=("Arial", 10, "bold"),
+            tk.Button(frame, text="Details", font=("Arial", 10, "bold"),
                       bg='#0066ff', fg='white', activebackground='#3399ff', activeforeground='white',
-                      command=lambda url=t['spotify_url']: webbrowser.open(url)).pack(pady=5)
+                      command=lambda idx=i: self.display_track(idx)).pack(pady=5)
+
+        self.lyrics_box = tk.Text(self.master, wrap=tk.WORD, height=15, width=110, bg='#0a0a0a', fg='#00ccff')
+        self.lyrics_box.pack(pady=10)
 
         button_frame = tk.Frame(self.master, bg='#0a0a0a')
         button_frame.pack(pady=5)
+        tk.Button(button_frame, text="Play Preview", bg='#0066ff', fg='white', activebackground='#3399ff', command=self.play_preview).pack(side=tk.LEFT, padx=5)
         tk.Button(button_frame, text="Stop Preview", bg='#0066ff', fg='white', activebackground='#3399ff', command=self.stop_preview).pack(side=tk.LEFT, padx=5)
+
+        self.selected_track_idx = None
 
     # Emotion to mood mapping
     def emotion_to_mood(self, emotion):
@@ -253,6 +257,59 @@ class MusicRecommenderApp:
             if len(tracks) >= 5:
                 break
         return tracks
+
+    # Display track details
+    def display_track(self, idx):
+        self.selected_track_idx = idx
+        t = self.tracks_data[idx]
+        lyrics = self.fetch_lyrics_snippet(t['artists'].split(",")[0], t['title'])
+        display = (
+            f"Title: {t['title']}\nArtist: {t['artists']}\n"
+            f"Spotify URL: {t['spotify_url']}\nPreview: {t['preview_url'] or '[not available]'}\n\n"
+            f"Lyrics:\n{lyrics or '[not found]'}"
+        )
+        self.lyrics_box.delete("1.0", tk.END)
+        self.lyrics_box.insert(tk.END, display)
+
+    # Fetch lyrics snippet
+    def fetch_lyrics_snippet(self, artist, title, max_chars=300):
+        try:
+            artist_clean = re.sub(r'[^\w\s\-]', '', artist).strip()
+            title_clean = re.sub(r'[^\w\s\-]', '', title).strip()
+            url = f"https://api.lyrics.ovh/v1/{requests.utils.quote(artist_clean)}/{requests.utils.quote(title_clean)}"
+            r = requests.get(url, timeout=6)
+            if r.status_code == 200:
+                data = r.json()
+                lyrics = data.get('lyrics', '')
+                if lyrics:
+                    snippet = lyrics.strip().replace('\r', '').replace('\n\n', '\n')
+                    return snippet[:max_chars] + ("..." if len(snippet) > max_chars else "")
+        except Exception:
+            pass
+        return None
+
+    # Audio playback
+    def play_preview(self):
+        if self.selected_track_idx is None:
+            messagebox.showwarning("No selection", "Please click 'Details' on a track first.")
+            return
+        t = self.tracks_data[self.selected_track_idx]
+        preview_url = t['preview_url']
+        if not preview_url:
+            messagebox.showwarning("No Preview", "This track has no preview available.")
+            return
+
+        self.stop_preview()
+        try:
+            r = requests.get(preview_url, timeout=6)
+            if r.status_code == 200:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+                    tmp.write(r.content)
+                    self.preview_file = tmp.name
+                pygame.mixer.music.load(self.preview_file)
+                pygame.mixer.music.play()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not play preview: {e}")
 
     def stop_preview(self):
         pygame.mixer.music.stop()
